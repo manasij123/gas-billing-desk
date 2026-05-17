@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-white text-slate-900 antialiased;
+  }
+}
+
+@layer utilities {
+  .nav-icon {
+    flex-shrink: 0;
+  }
+  .nav-icon--active {
+    animation: nav-icon-glow 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes nav-icon-glow {
+  0%,
+  100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 0 transparent);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 3px rgba(201, 168, 76, 0.45));
+    transform: scale(1.06);
+  }
+}
+
+/* Print: only the invoice sheet — undo scroll clipping so full A4 prints */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #root,
+  .app-root,
+  .app-root > div,
+  .print-main-scroll,
+  .sales-billing-layout,
+  .sales-billing-preview-wrap,
+  #invoice-print-root {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
+
+  .sales-billing-layout {
+    display: block !important;
+  }
+
+  .sales-billing-preview-wrap {
+    width: 100% !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  .print-root-hidden {
+    display: none !important;
+  }
+
+  #invoice-print-root {
+    display: block !important;
+    position: relative !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    transform: none !important;
+    page-break-after: auto;
+    page-break-inside: avoid;
+  }
+
+  #invoice-print-root * {
+    box-shadow: none !important;
+  }
+
+  /* Allow multi-page if content grows */
+  .invoice-a4-sheet {
+    page-break-inside: avoid;
+  }
+}
