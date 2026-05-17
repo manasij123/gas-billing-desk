@@ -14,6 +14,7 @@ const SUBS = [
 export default function StockPage() {
   const {
     stockByProductId,
+    customerHoldings,
     fullCatalog,
     getLowFilledFor,
     setRateOverride,
@@ -41,9 +42,13 @@ export default function StockPage() {
         const st = stockByProductId[p.id] || { filled: 0, empty: 0 };
         const low = getLowFilledFor(p.id);
         const b = stockBadge(st.filled, low);
-        return { ...p, st, low, b };
+        // Calculate how many are currently with customers
+        const outQty = customerHoldings
+          .filter((h) => h.productId === p.id)
+          .reduce((sum, h) => sum + h.qty, 0);
+        return { ...p, st, low, b, outQty };
       }),
-    [fullCatalog, stockByProductId, getLowFilledFor]
+    [fullCatalog, stockByProductId, getLowFilledFor, customerHoldings]
   );
 
   const alertRows = useMemo(() => rows.filter((r) => r.b.tone !== 'ok'), [rows]);
@@ -122,37 +127,48 @@ export default function StockPage() {
 
       {(sub === 'inventory' || sub === 'alerts') && (
         <div className="mt-8 overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl">
-          <table className="w-full text-left text-sm border-separate border-spacing-0">
-            <thead className="bg-brand-blue text-[10px] font-black uppercase tracking-widest text-blue-100">
+          <table className="w-full text-left text-sm border-separate border-spacing-0 table-auto">
+            <thead className="text-[10px] font-black uppercase tracking-widest text-blue-100">
               <tr>
-                <th className="px-6 py-5 border-b border-blue-800">Product Specification</th>
-                <th className="px-6 py-5 border-b border-blue-800 text-right">Stock (Filled)</th>
-                <th className="px-6 py-5 border-b border-blue-800 text-right">Stock (Empty)</th>
-                <th className="px-6 py-5 border-b border-blue-800">Status</th>
-                <th className="px-6 py-5 border-b border-blue-800 text-right">Fixed Rate</th>
-                <th className="px-4 py-3" />
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 rounded-tl-3xl">Product Specification</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-right">In-Shop (Filled)</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-right">In-Shop (Empty)</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-right">At Customer</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-center">Status</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-right">Fixed Rate</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 text-right">Alert Level</th>
+                <th className="bg-brand-blue px-6 py-5 border-b border-blue-800 rounded-tr-3xl text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gold/15">
               {(sub === 'alerts' ? alertRows : rows).length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">
+                  <td colSpan={8} className="px-6 py-8 text-center text-sm text-slate-500">
                     {sub === 'alerts' ? 'No low or out-of-stock SKUs right now.' : 'No products.'}
                   </td>
                 </tr>
               ) : (
                 (sub === 'alerts' ? alertRows : rows).map((p) => (
                   <tr key={p.id} className="hover:bg-gold-muted">
-                    <td className="px-4 py-3 font-medium text-slate-900">
-                      {p.label}
-                      {!isBuiltInProductId(p.id) && (
-                        <span className="ml-2 text-[10px] font-normal uppercase text-gold">Custom</span>
-                      )}
+                    <td className="px-6 py-4 font-medium text-slate-900">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-black">
+                          {p.label}
+                          {!isBuiltInProductId(p.id) && (
+                            <span className="ml-2 text-[10px] font-normal uppercase text-brand-gold">Custom</span>
+                          )}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">HSN: {p.hsn}</span>
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-slate-600">{p.hsn}</td>
-                    <td className="px-4 py-3 text-right font-bold text-brand-green">{p.st.filled}</td>
-                    <td className="px-4 py-3 text-right text-slate-700">{p.st.empty}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-6 py-4 text-right font-black text-brand-green text-base">{p.st.filled}</td>
+                    <td className="px-6 py-4 text-right font-bold text-slate-600 text-base">{p.st.empty}</td>
+                    <td className="px-6 py-4 text-right">
+                      <span className="rounded-lg bg-brand-purple/10 px-2 py-1 text-sm font-black text-brand-purple">
+                        {p.outQty}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-center">
                       <span
                         className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-bold ${
                           p.b.tone === 'out'
@@ -165,10 +181,10 @@ export default function StockPage() {
                         {p.b.label}
                       </span>
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-6 py-4 text-right">
                       <input
                         type="number"
-                        className="w-20 rounded border border-slate-300 px-1 py-1 text-right text-xs"
+                        className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-right text-xs font-bold focus:ring-2 focus:ring-brand-emerald/20 outline-none"
                         key={`rate-${p.id}-${p.defaultRate}`}
                         defaultValue={p.defaultRate}
                         onBlur={(e) => {
@@ -176,11 +192,11 @@ export default function StockPage() {
                         }}
                       />
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-6 py-4 text-right">
                       <input
                         type="number"
                         min={0}
-                        className="w-16 rounded border border-slate-300 px-1 py-1 text-right text-xs"
+                        className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-right text-xs font-bold focus:ring-2 focus:ring-brand-emerald/20 outline-none"
                         key={`low-${p.id}-${p.low}`}
                         defaultValue={p.low}
                         onBlur={(e) => {
@@ -190,7 +206,7 @@ export default function StockPage() {
                         }}
                       />
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-6 py-4 text-right">
                       {!isBuiltInProductId(p.id) && (
                         <button
                           type="button"

@@ -71,7 +71,10 @@ export default function SalesBillingPage() {
   const [activeCategory, setActiveCategory] = useState('All');
   const [saveMsg, setSaveMsg] = useState('');
   const [transactionId, setTransactionId] = useState('');
+  const [receivedAmount, setReceivedAmount] = useState('');
+  const [paymentDueDate, setPaymentDueDate] = useState('');
   const [showExtraDetails, setShowDetails] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState('idle'); // 'idle', 'sent', 'confirmed'
 
   useEffect(() => {
     if (!customers.find((c) => c.id === customerId) && customers[0]) setCustomerId(customers[0].id);
@@ -221,6 +224,46 @@ export default function SalesBillingPage() {
     });
   }
 
+  function handleSendPaymentLink() {
+    setSaveMsg('');
+    const filledLines = items.filter((r) => r.description.trim());
+    if (!customerId || !buyer.name) {
+      setSaveMsg('Select a customer before generating link.');
+      return;
+    }
+    if (filledLines.length === 0) {
+      setSaveMsg('Add at least one line item.');
+      return;
+    }
+
+    // Stock validation before requesting payment
+    for (const row of filledLines) {
+      if (!row.productId) continue;
+      const need = Math.max(0, Math.floor(Number(row.qtyNo) || 0));
+      const st = stockByProductId[row.productId];
+      if (!st || st.filled < need) {
+        setSaveMsg(`Insufficient stock for ${row.description}.`);
+        return;
+      }
+    }
+
+    const link = `https://pay.mig.com/${uid()}`;
+    const message = `Dear ${buyer.name}, your bill MIG/${fy}/... for ₹${totals.grand.toLocaleString('en-IN')} is ready. Please pay here: ${link}`;
+    
+    window.open(`https://wa.me/91${buyer.phone}?text=${encodeURIComponent(message)}`, '_blank');
+    
+    setPaymentStatus('sent');
+    setSaveMsg('Payment link sent. Simulating server confirmation (Wait ~7 seconds)...');
+
+    // Simulate server side confirmation (e.g., via webhook)
+    setTimeout(() => {
+      setPaymentStatus('confirmed');
+      setReceivedAmount(String(totals.grand));
+      setPaymentMode('Bank Transfer');
+      setSaveMsg('Payment Received! The "Save" button is now active.');
+    }, 7000);
+  }
+
   function handleSaveInvoice() {
     setSaveMsg('');
     const filledLines = items.filter((r) => r.description.trim());
@@ -273,6 +316,8 @@ export default function SalesBillingPage() {
       lines: filledLines.map((r) => ({ ...r, value: lineValue(r) })),
       totals,
       stockMoves,
+      receivedAmount: Number(receivedAmount) || 0,
+      paymentDueDate,
     };
 
     const res = saveInvoice(payload);
@@ -289,10 +334,18 @@ export default function SalesBillingPage() {
     setChallanDate('');
     setPoNo('');
     setPoDate('');
+    setReceivedAmount('');
+    setPaymentDueDate('');
+    setPaymentStatus('idle');
   }
 
   return (
     <div className="sales-billing-layout flex min-h-full flex-col lg:flex-row bg-white">
+      <style dangerouslySetInnerHTML={{ __html: `
+        @media print {
+          @page { size: A4 landscape; margin: 10mm; }
+        }
+      ` }} />
       <div className="print-root-hidden w-full shrink-0 border-b border-blue-100 bg-white lg:w-[460px] lg:border-b-0 lg:border-r shadow-xl z-10">
         <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/90 backdrop-blur-lg px-6 py-5">
           <h1 className="text-xl font-black text-slate-900 tracking-tight">Sales Terminal</h1>
@@ -308,6 +361,7 @@ export default function SalesBillingPage() {
               <div className="ml-auto flex flex-col items-end gap-2">
                 <input
                   value={invoiceDate}
+                  disabled={paymentStatus !== 'idle'}
                   onChange={(e) => setInvoiceDate(e.target.value)}
                   className="rounded-lg border border-slate-200 bg-white shadow-sm px-3 py-1.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-brand-purple/20"
                 />
@@ -316,6 +370,7 @@ export default function SalesBillingPage() {
                     <button
                       key={m}
                       type="button"
+                      disabled={paymentStatus !== 'idle'}
                       onClick={() => setPaymentMode(m)}
                       className={`rounded-lg px-3 py-1.5 text-[10px] font-black transition-all ${
                         paymentMode === m ? 'bg-brand-blue text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'
@@ -358,12 +413,14 @@ export default function SalesBillingPage() {
             <input
               value={customerQuery}
               onChange={(e) => setCustomerQuery(e.target.value)}
+              disabled={paymentStatus !== 'idle'}
               placeholder="Search…"
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
             <select
               value={customerId}
               onChange={(e) => setCustomerId(e.target.value)}
+              disabled={paymentStatus !== 'idle'}
               className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             >
               {filteredCustomers.map((c) => (
@@ -398,12 +455,14 @@ export default function SalesBillingPage() {
                   <input
                     placeholder="State"
                     value={draftCustomer.state}
+                    disabled={paymentStatus !== 'idle'}
                     onChange={(e) => setDraftCustomer((d) => ({ ...d, state: e.target.value }))}
                     className="rounded border border-slate-300 px-2 py-1 text-sm"
                   />
                   <input
                     placeholder="Code"
                     value={draftCustomer.stateCode}
+                    disabled={paymentStatus !== 'idle'}
                     onChange={(e) => setDraftCustomer((d) => ({ ...d, stateCode: e.target.value }))}
                     className="rounded border border-slate-300 px-2 py-1 text-sm"
                   />
@@ -423,6 +482,7 @@ export default function SalesBillingPage() {
             <button 
               type="button" 
               onClick={() => setShowDetails(!showExtraDetails)}
+              disabled={paymentStatus !== 'idle'}
               className="flex w-full items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-500"
             >
               <span>Transaction Details</span>
@@ -430,14 +490,22 @@ export default function SalesBillingPage() {
             </button>
             {showExtraDetails && (
               <div className="mt-4 grid grid-cols-2 gap-3">
-                <Field label="Vehicle No" value={vehicleNo} onChange={setVehicleNo} />
-                <Field label="Challan No" value={challanNo} onChange={setChallanNo} />
-                <Field label="Challan date" value={challanDate} onChange={setChallanDate} />
-                <Field label="PO No" value={poNo} onChange={setPoNo} />
-                <Field label="PO date" value={poDate} onChange={setPoDate} />
-                <Field label="Batch no" value={batchNo} onChange={setBatchNo} />
+                <Field label="Vehicle No" value={vehicleNo} disabled={paymentStatus !== 'idle'} onChange={setVehicleNo} />
+                <Field label="Challan No" value={challanNo} disabled={paymentStatus !== 'idle'} onChange={setChallanNo} />
+                <Field label="Challan date" value={challanDate} disabled={paymentStatus !== 'idle'} onChange={setChallanDate} />
+                <Field label="PO No" value={poNo} disabled={paymentStatus !== 'idle'} onChange={setPoNo} />
+                <Field label="PO date" value={poDate} disabled={paymentStatus !== 'idle'} onChange={setPoDate} />
+                <Field label="Batch no" value={batchNo} disabled={paymentStatus !== 'idle'} onChange={setBatchNo} />
               </div>
             )}
+          </section>
+
+          <section className="rounded-2xl border border-amber-100 bg-amber-50/30 p-4 space-y-3">
+            <h2 className="text-[10px] font-black uppercase tracking-widest text-amber-600">Payment Reconciliation</h2>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Amount Received (₹)" value={receivedAmount} disabled={paymentStatus !== 'idle'} onChange={setReceivedAmount} />
+              <Field label="Due Date" value={paymentDueDate} disabled={paymentStatus !== 'idle'} onChange={setPaymentDueDate} hint="DD/MM/YYYY" />
+            </div>
           </section>
 
           {paymentMode !== 'Cash' && (
@@ -460,6 +528,7 @@ export default function SalesBillingPage() {
                     <button
                       key={cat}
                       type="button"
+                      disabled={paymentStatus !== 'idle'}
                       onClick={() => setActiveCategory(cat)}
                       className={`shrink-0 rounded-full px-3 py-1 text-[10px] font-bold transition-all ${
                         activeCategory === cat ? 'bg-brand-emerald text-white shadow-md' : 'bg-slate-100 text-slate-600'
@@ -473,6 +542,7 @@ export default function SalesBillingPage() {
                   <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                   <input
                     value={searchTerm}
+                    disabled={paymentStatus !== 'idle'}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     placeholder="Search catalog..."
                     className="w-full rounded-xl border border-slate-200 bg-slate-50/50 pl-9 pr-3 py-2 text-sm focus:bg-white transition-all"
@@ -480,7 +550,7 @@ export default function SalesBillingPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 max-h-[220px] overflow-y-auto p-1 custom-sidebar-nav">
+              <div className={`grid grid-cols-2 gap-2 max-h-[220px] overflow-y-auto p-1 custom-sidebar-nav ${paymentStatus !== 'idle' ? 'opacity-50 pointer-events-none' : ''}`}>
                 {filteredCatalog.map(p => {
                   const st = stockByProductId[p.id];
                   const b = stockBadge(st?.filled ?? 0, getLowFilledFor(p.id));
@@ -519,18 +589,19 @@ export default function SalesBillingPage() {
                       <div className="min-w-0 flex-1">
                         <input
                           value={row.description}
+                          readOnly={paymentStatus !== 'idle'}
                           onChange={(e) => updateItem(row.id, { description: e.target.value })}
                           className="w-full bg-transparent font-bold text-slate-800 focus:outline-none"
                           placeholder="Item description..."
                         />
                       </div>
-                      <button type="button" onClick={() => removeItem(row.id)} className="text-slate-300 hover:text-red-500">
+                      {paymentStatus === 'idle' && <button type="button" onClick={() => removeItem(row.id)} className="text-slate-300 hover:text-red-500">
                         <i className="fa-solid fa-circle-xmark"></i>
-                      </button>
+                      </button>}
                     </div>
                     
                     <div className="mt-4 flex items-center gap-4">
-                      <div className="flex items-center rounded-xl bg-slate-100 p-1">
+                      <div className={`flex items-center rounded-xl bg-slate-100 p-1 ${paymentStatus !== 'idle' ? 'opacity-50 pointer-events-none' : ''}`}>
                         <button 
                           type="button" 
                           onClick={() => chgQty(row.id, -1)}
@@ -552,7 +623,7 @@ export default function SalesBillingPage() {
                         </button>
                       </div>
                       <div className="flex-1">
-                        <MiniField label="Rate" value={row.rate} onChange={(v) => updateItem(row.id, { rate: v })} />
+                        <MiniField label="Rate" value={row.rate} disabled={paymentStatus !== 'idle'} onChange={(v) => updateItem(row.id, { rate: v })} />
                       </div>
                       <div className="text-right">
                         <div className="text-[10px] font-bold uppercase text-slate-400">Total</div>
@@ -561,13 +632,14 @@ export default function SalesBillingPage() {
                     </div>
 
                     <div className="mt-3 grid grid-cols-4 gap-2 border-t border-slate-50 pt-3">
-                      <MiniField label="HSN" value={row.hsn} onChange={(v) => updateItem(row.id, { hsn: v })} />
-                      <MiniField label="CUM" value={row.qtyCum} onChange={(v) => updateItem(row.id, { qtyCum: v })} />
-                      <MiniField label="KG" value={row.qtyKg} onChange={(v) => updateItem(row.id, { qtyKg: v })} />
+                      <MiniField label="HSN" value={row.hsn} disabled={paymentStatus !== 'idle'} onChange={(v) => updateItem(row.id, { hsn: v })} />
+                      <MiniField label="CUM" value={row.qtyCum} disabled={paymentStatus !== 'idle'} onChange={(v) => updateItem(row.id, { qtyCum: v })} />
+                      <MiniField label="KG" value={row.qtyKg} disabled={paymentStatus !== 'idle'} onChange={(v) => updateItem(row.id, { qtyKg: v })} />
                       <div>
                         <label className="text-[8px] font-black uppercase text-slate-400">Per</label>
                         <select
                           value={row.ratePer}
+                          disabled={paymentStatus !== 'idle'}
                           onChange={(e) => updateItem(row.id, { ratePer: e.target.value })}
                           className="mt-0.5 w-full bg-transparent text-[10px] font-bold text-slate-600 focus:outline-none"
                         >
@@ -598,12 +670,34 @@ export default function SalesBillingPage() {
           </div>
 
           <div className="flex flex-wrap gap-2 pb-6">
+            {paymentStatus === 'idle' && (
+              <button
+                type="button"
+                onClick={handleSendPaymentLink}
+                className="rounded-lg bg-brand-blue px-5 py-2.5 text-sm font-bold text-white hover:brightness-95 shadow-lg shadow-brand-blue/20"
+              >
+                <i className="fa-solid fa-paper-plane mr-2"></i> Send Payment Link
+              </button>
+            )}
+
+            {paymentStatus === 'sent' && (
+              <div className="flex items-center gap-2 rounded-lg bg-slate-100 px-5 py-2.5 text-sm font-black text-slate-500 border border-slate-200 shadow-inner">
+                <i className="fa-solid fa-spinner animate-spin text-brand-blue"></i>
+                Verifying Payment Confirmation...
+              </div>
+            )}
+
             <button
               type="button"
               onClick={handleSaveInvoice}
-              className="rounded-lg bg-gold px-5 py-2.5 text-sm font-bold text-emerald-950 hover:brightness-95"
+              disabled={paymentStatus !== 'confirmed'}
+              className={`rounded-lg px-5 py-2.5 text-sm font-bold transition-all ${
+                paymentStatus === 'confirmed' 
+                  ? 'bg-gold text-emerald-950 hover:brightness-95 shadow-lg ring-2 ring-gold/20' 
+                  : 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed'
+              }`}
             >
-              Save invoice &amp; deduct stock
+              {paymentStatus === 'confirmed' ? '✓ Save Invoice & Deduct Stock' : 'Save Invoice (Locked)'}
             </button>
             <button
               type="button"
@@ -621,7 +715,7 @@ export default function SalesBillingPage() {
         <div
           id="invoice-print-root"
           className="mx-auto bg-white shadow-md print:shadow-none"
-          style={{ width: '210mm' }}
+          style={{ width: '297mm' }}
         >
           <InvoiceA4Preview
             invoiceNo={invoiceNo}
@@ -643,6 +737,8 @@ export default function SalesBillingPage() {
             grandTotal={totals.grand}
             paymentMode={paymentMode}
             transactionId={transactionId}
+            receivedAmount={Number(receivedAmount) || 0}
+            paymentDueDate={paymentDueDate}
           />
         </div>
       </div>
@@ -650,12 +746,13 @@ export default function SalesBillingPage() {
   );
 }
 
-function Field({ label, value, onChange }) {
+function Field({ label, value, onChange, disabled }) {
   return (
     <div>
       <label className="text-[10px] font-semibold uppercase text-slate-500">{label}</label>
       <input
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         className="mt-0.5 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
       />
@@ -663,7 +760,7 @@ function Field({ label, value, onChange }) {
   );
 }
 
-function MiniField({ label, value, onChange, hint }) {
+function MiniField({ label, value, onChange, hint, disabled }) {
   return (
     <div>
       <label className="text-[10px] font-semibold uppercase text-slate-500">
@@ -672,6 +769,7 @@ function MiniField({ label, value, onChange, hint }) {
       </label>
       <input
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-sm"
       />

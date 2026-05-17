@@ -36,6 +36,8 @@ export default function InvoiceA4Preview({
   grandTotal,
   paymentMode,
   transactionId,
+  receivedAmount = 0,
+  paymentDueDate,
 }) {
   const amountWords = rupeesToWords(grandTotal);
 
@@ -322,6 +324,18 @@ export default function InvoiceA4Preview({
               {fmt(grandTotal, 2)}
             </div>
           </div>
+          {grandTotal - receivedAmount > 0 && (
+            <div className="grid grid-cols-[1fr_56%] text-[9px] border-t border-slate-200 bg-white">
+              <div className="border-r px-1 py-1 font-bold text-slate-500">RECEIVED AMOUNT</div>
+              <div className="px-1 py-1 text-right font-bold text-slate-700">{fmt(receivedAmount, 2)}</div>
+            </div>
+          )}
+          {grandTotal - receivedAmount > 0 && (
+            <div className="grid grid-cols-[1fr_56%] text-[10px] border-t border-red-200 bg-red-50">
+              <div className="border-r px-1 py-1 font-black text-red-600">BALANCE DUE {paymentDueDate ? `(BY ${paymentDueDate})` : ''}</div>
+              <div className="px-1 py-1 text-right font-black text-red-700">{fmt(grandTotal - receivedAmount, 2)}</div>
+            </div>
+          )}
         </div>
 
         <div

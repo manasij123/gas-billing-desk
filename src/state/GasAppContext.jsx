@@ -185,8 +185,10 @@ export function GasAppProvider({ children }) {
       for (const m of stockMoves) {
         const cur = nextStock[m.productId];
         nextStock[m.productId] = {
+          ...cur,
           filled: cur.filled - m.qtyNo,
-          empty: cur.empty + m.qtyNo,
+          // Note: Empty stock doesn't increase here because the 
+          // customer hasn't returned them to the yard yet.
         };
       }
 
@@ -218,6 +220,15 @@ export function GasAppProvider({ children }) {
 
     return { ok: true, id: invId }; 
   }, [state, fullCatalog]);
+
+  const updateInvoice = useCallback((invoiceId, patch) => {
+    setState((s) => ({
+      ...s,
+      invoices: s.invoices.map((inv) =>
+        inv.id === invoiceId ? { ...inv, ...patch } : inv
+      ),
+    }));
+  }, []);
 
   /** Receive filled from supplier; return same qty of empties */
   const savePurchase = useCallback((payload) => { // Removed duplicate function
@@ -336,6 +347,7 @@ export function GasAppProvider({ children }) {
       removeCatalogItem,
       setLowFilledOverride,
       setRateOverride,
+      updateInvoice,
       adjustStock,
       saveInvoice,
       savePurchase,
@@ -359,6 +371,7 @@ export function GasAppProvider({ children }) {
       removeCatalogItem,
       setLowFilledOverride,
       setRateOverride,
+      updateInvoice,
       adjustStock,
       saveInvoice,
       savePurchase,
