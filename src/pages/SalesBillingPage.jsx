@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import InvoiceA4Preview from '../components/InvoiceA4Preview.jsx';
 import { useGasApp } from '../state/GasAppContext.jsx';
 import { computeTotals, lineValue, taxLabelsForLines } from '../lib/billingMath.js';
@@ -6,7 +6,7 @@ import { todayDdMmYyyy, parseInvoiceDate } from '../lib/dates.js';
 import { uid } from '../utils/id.js'; // Import uid from utils
 import { stockBadge } from '../lib/stockStatus.js';
 
-const PAYMENT_MODES = ['Cash', 'Credit', 'Bank Transfer'];
+const PAYMENT_MODES = ['Cash', 'Credit', 'Bank Transfer', 'UPI'];
 
 function fySegmentFromDdMmYyyy(dateStr) {
   const d = parseInvoiceDate(dateStr);
@@ -31,6 +31,12 @@ function emptyLine() {
   };
 }
 
+function resolveRequestedAmount(value, fallback, upperBound = Number.POSITIVE_INFINITY) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return Math.max(0, fallback);
+  return Math.max(0, Math.min(n, upperBound));
+}
+
 export default function SalesBillingPage() {
   const {
     customers,
@@ -40,6 +46,8 @@ export default function SalesBillingPage() {
     saveInvoice,
     addCustomer,
     fullCatalog,
+    createPaymentIntent,
+    processPaymentWebhook,
     getLowFilledFor,
   } = useGasApp();
 
@@ -75,6 +83,8 @@ export default function SalesBillingPage() {
   const [paymentDueDate, setPaymentDueDate] = useState('');
   const [showExtraDetails, setShowDetails] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState('idle'); // 'idle', 'sent', 'confirmed'
+  const [cashProvided, setCashProvided] = useState('');
+  const [qrCodeUrl, setQrCodeUrl] = useState('');
 
   useEffect(() => {
     if (!customers.find((c) => c.id === customerId) && customers[0]) setCustomerId(customers[0].id);
@@ -99,7 +109,17 @@ export default function SalesBillingPage() {
   const totals = useMemo(() => computeTotals(items), [items]);
   const taxLabels = useMemo(() => taxLabelsForLines(items), [items]);
 
+  const requestAmount = useMemo(
+    () => resolveRequestedAmount(receivedAmount, totals.grand, totals.grand),
+    [receivedAmount, totals.grand]
+  );
+
   // Filterable catalog based on Meta-style UX
+  const changeToReturn = useMemo(() => {
+    const provided = Number(cashProvided) || 0;
+    return provided > totals.grand ? provided - totals.grand : 0;
+  }, [cashProvided, totals.grand]);
+
   const CATEGORIES = ['All', 'Oxygen', 'Nitrogen', 'Argon', 'CO2', 'DA'];
   const filteredCatalog = useMemo(() => {
     return fullCatalog.filter(p => {
@@ -224,7 +244,50 @@ export default function SalesBillingPage() {
     });
   }
 
-  function handleSendPaymentLink() {
+  async function handleGenerateInStoreQr() {
+    setSaveMsg('');
+    const amountToPay = requestAmount;
+    if (amountToPay <= 0) {
+      setSaveMsg('Invalid amount for QR generation.');
+      return;
+    }
+
+    // Validation for stock before payment
+    const filledLines = items.filter((r) => r.description.trim());
+    for (const row of filledLines) {
+      if (!row.productId) continue;
+      const need = Math.max(0, Math.floor(Number(row.qtyNo) || 0));
+      const st = stockByProductId[row.productId];
+      if (!st || st.filled < need) {
+        setSaveMsg(`Insufficient stock for ${row.description}.`);
+        return;
+      }
+    }
+
+    const upiLink = `upi://pay?pa=murshidabadindustrialgases@bank&pn=MIG&am=${amountToPay}&cu=INR`;
+    setQrCodeUrl(`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiLink)}`);
+
+    setPaymentStatus('sent');
+    setSaveMsg(
+      amountToPay < totals.grand
+        ? `Partial UPI QR generated for ₹${amountToPay}. Balance ₹${(totals.grand - amountToPay).toLocaleString('en-IN', { minimumFractionDigits: 2 })} will remain pending.`
+        : `In-Store QR generated for ₹${amountToPay}. Awaiting scan...`
+    );
+
+    setTimeout(() => {
+      setPaymentStatus('confirmed');
+      setReceivedAmount(String(amountToPay));
+      setPaymentMode('UPI');
+      setQrCodeUrl('');
+      setSaveMsg(
+        amountToPay < totals.grand
+          ? 'Partial payment confirmed. The "Save" button is now active.'
+          : 'Payment Confirmed! The "Save" button is now active.'
+      );
+    }, 8000);
+  }
+
+  async function handleSendPaymentLink() {
     setSaveMsg('');
     const filledLines = items.filter((r) => r.description.trim());
     if (!customerId || !buyer.name) {
@@ -247,20 +310,28 @@ export default function SalesBillingPage() {
       }
     }
 
-    const link = `https://pay.mig.com/${uid()}`;
-    const message = `Dear ${buyer.name}, your bill MIG/${fy}/... for ₹${totals.grand.toLocaleString('en-IN')} is ready. Please pay here: ${link}`;
+    // 1. Create Payment Intent via "Gateway"
+    const intentAmount = requestAmount;
+    const intent = await createPaymentIntent(intentAmount, customerId, { fy, invoiceNo });
+    
+    const message = `*MIG PAYMENT REQUEST*\nDear ${buyer.name}, your bill for ₹${intentAmount.toLocaleString('en-IN')} is ready.\nSecure Payment Link: ${intent.link}\n- Murshidabad Industrial Gases`;
     
     window.open(`https://wa.me/91${buyer.phone}?text=${encodeURIComponent(message)}`, '_blank');
     
     setPaymentStatus('sent');
-    setSaveMsg('Payment link sent. Simulating server confirmation (Wait ~7 seconds)...');
+    setSaveMsg('Payment link sent. Awaiting secure confirmation from Gateway Server...');
 
-    // Simulate server side confirmation (e.g., via webhook)
+    // 2. Simulate Server Webhook after customer "pays"
     setTimeout(() => {
+      processPaymentWebhook(intent.id);
       setPaymentStatus('confirmed');
-      setReceivedAmount(String(totals.grand));
+      setReceivedAmount(String(intentAmount));
       setPaymentMode('Bank Transfer');
-      setSaveMsg('Payment Received! The "Save" button is now active.');
+      setSaveMsg(
+        intentAmount < totals.grand
+          ? `Partial payment received for ₹${intentAmount}. Save the invoice to keep balance pending.`
+          : 'Payment Received! The "Save" button is now active.'
+      );
     }, 7000);
   }
 
@@ -336,6 +407,8 @@ export default function SalesBillingPage() {
     setPoDate('');
     setReceivedAmount('');
     setPaymentDueDate('');
+    setCashProvided('');
+    setQrCodeUrl('');
     setPaymentStatus('idle');
   }
 
@@ -506,6 +579,20 @@ export default function SalesBillingPage() {
               <Field label="Amount Received (₹)" value={receivedAmount} disabled={paymentStatus !== 'idle'} onChange={setReceivedAmount} />
               <Field label="Due Date" value={paymentDueDate} disabled={paymentStatus !== 'idle'} onChange={setPaymentDueDate} hint="DD/MM/YYYY" />
             </div>
+            {paymentMode === 'Cash' && (
+              <div className="mt-4 grid grid-cols-2 gap-3 border-t border-amber-200/50 pt-4">
+                <Field 
+                  label="Cash Provided (₹)" 
+                  value={cashProvided} 
+                  onChange={setCashProvided} 
+                  disabled={paymentStatus === 'confirmed'}
+                />
+                <div className="flex flex-col justify-end">
+                   <div className="text-[10px] font-black uppercase text-amber-600">Change to Return</div>
+                   <div className="text-lg font-black text-slate-900">₹{changeToReturn.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+                </div>
+              </div>
+            )}
           </section>
 
           {paymentMode !== 'Cash' && (
@@ -670,14 +757,68 @@ export default function SalesBillingPage() {
           </div>
 
           <div className="flex flex-wrap gap-2 pb-6">
-            {paymentStatus === 'idle' && (
-              <button
-                type="button"
-                onClick={handleSendPaymentLink}
-                className="rounded-lg bg-brand-blue px-5 py-2.5 text-sm font-bold text-white hover:brightness-95 shadow-lg shadow-brand-blue/20"
-              >
-                <i className="fa-solid fa-paper-plane mr-2"></i> Send Payment Link
-              </button>
+            {paymentStatus === 'idle' && !qrCodeUrl && (
+              <>
+                {paymentMode === 'UPI' && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateInStoreQr}
+                    className="rounded-lg bg-brand-emerald px-5 py-2.5 text-sm font-bold text-white hover:brightness-95 shadow-lg shadow-brand-emerald/20"
+                  >
+                    <i className="fa-solid fa-qrcode mr-2"></i> Generate In-Store QR
+                  </button>
+                )}
+
+                {(paymentMode === 'UPI' || paymentMode === 'Bank Transfer') && (
+                  <button
+                    type="button"
+                    onClick={handleSendPaymentLink}
+                    className="rounded-lg bg-brand-blue px-5 py-2.5 text-sm font-bold text-white hover:brightness-95 shadow-lg shadow-brand-blue/20"
+                  >
+                    <i className="fa-solid fa-paper-plane mr-2"></i> Send Payment Link (Remote)
+                  </button>
+                )}
+
+                {paymentMode === 'Cash' && (
+                  <button
+                    type="button"
+                    disabled={cashProvided && Number(cashProvided) < totals.grand}
+                    onClick={() => {
+                      const tendered = resolveRequestedAmount(cashProvided, totals.grand, Number.POSITIVE_INFINITY);
+                      const settled = Math.min(tendered, totals.grand);
+                      setPaymentStatus('confirmed');
+                      setReceivedAmount(String(settled));
+                      if (tendered > totals.grand) {
+                        setSaveMsg(
+                          `Cash payment confirmed. Return ₹${(tendered - totals.grand).toLocaleString('en-IN', { minimumFractionDigits: 2 })} as change.`
+                        );
+                      } else {
+                        setSaveMsg('Cash payment confirmed. You can now save the invoice.');
+                      }
+                    }}
+                    className={`rounded-lg px-5 py-2.5 text-sm font-bold text-white shadow-lg transition-all ${
+                      cashProvided && Number(cashProvided) < totals.grand
+                        ? 'bg-slate-300 cursor-not-allowed'
+                        : 'bg-amber-500 hover:brightness-95 shadow-amber-500/20'
+                    }`}
+                  >
+                    <i className="fa-solid fa-money-bill-check mr-2"></i> Confirm Cash Received
+                  </button>
+                )}
+
+                {paymentMode === 'Credit' && !receivedAmount && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentStatus('confirmed');
+                      setSaveMsg('Full Credit transaction confirmed.');
+                    }}
+                    className="rounded-lg bg-slate-600 px-5 py-2.5 text-sm font-bold text-white hover:brightness-95 shadow-lg"
+                  >
+                    <i className="fa-solid fa-hand-holding-dollar mr-2"></i> Confirm Credit Sale
+                  </button>
+                )}
+              </>
             )}
 
             {paymentStatus === 'sent' && (
@@ -709,6 +850,28 @@ export default function SalesBillingPage() {
           </div>
         </div>
       </div>
+
+      {qrCodeUrl && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-8 text-center shadow-2xl animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-black text-slate-900">Scan to Pay</h3>
+            <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-1 mb-6">UPI In-Store Payment</p>
+            <div className="mx-auto aspect-square w-full max-w-[200px] border-4 border-slate-50 p-2 rounded-2xl shadow-inner">
+              <img src={qrCodeUrl} alt="UPI QR Code" className="w-full h-full object-contain" />
+            </div>
+            <div className="mt-6 text-2xl font-black text-brand-emerald">
+              ₹{(Number(receivedAmount) || totals.grand).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            </div>
+            <p className="mt-2 text-[10px] font-bold text-slate-400">Waiting for payment confirmation...</p>
+            <button 
+              onClick={() => { setQrCodeUrl(''); setPaymentStatus('idle'); }}
+              className="mt-8 w-full py-3 text-xs font-black uppercase tracking-widest text-slate-400 hover:text-rose-500 transition-colors"
+            >
+              Cancel Transaction
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="sales-billing-preview-wrap invoice-print-scroll min-h-[60vh] flex-1 overflow-auto border-l border-gold/25 bg-white p-4 lg:min-h-0">
         <p className="print-root-hidden mb-2 text-center text-xs font-semibold text-brand-emerald">Live invoice preview</p>

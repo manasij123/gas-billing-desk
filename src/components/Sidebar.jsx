@@ -12,6 +12,20 @@ const NAV = [
   { id: 'reports', label: 'Reports' },
 ];
 
+const getActiveColorClasses = (id) => {
+  const map = {
+    dashboard: 'bg-blue-500 shadow-blue-500/30',
+    sales: 'bg-emerald-500 shadow-emerald-500/30',
+    purchase: 'bg-amber-500 shadow-amber-500/30',
+    stock: 'bg-green-500 shadow-green-500/30',
+    parties: 'bg-purple-500 shadow-purple-500/30',
+    tracker: 'bg-violet-600 shadow-violet-600/30',
+    reports: 'bg-pink-500 shadow-pink-500/30',
+    lookup: 'bg-slate-600 shadow-slate-600/30',
+  };
+  return map[id] || 'bg-brand-emerald shadow-brand-emerald/30';
+};
+
 export default function Sidebar({ active, onNavigate, collapsed, onToggleCollapse }) {
   return (
     <aside
@@ -74,7 +88,7 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggleCollaps
                 collapsed ? 'justify-center px-0' : 'gap-3 px-3'
               } ${
                 isActive
-                  ? `text-white rounded-full ${collapsed ? 'bg-transparent' : 'bg-brand-emerald shadow-lg shadow-brand-emerald/30'}`
+                  ? `text-white rounded-full ${collapsed ? 'bg-transparent' : `${getActiveColorClasses(item.id)} shadow-lg`}`
                   : `text-slate-500 hover:text-slate-900 rounded-full ${collapsed ? 'hover:bg-transparent' : 'hover:bg-slate-200/50'}`
               }`}
             >
@@ -82,7 +96,7 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggleCollaps
                 className={`flex shrink-0 items-center justify-center transition-all duration-500 ease-in-out rounded-full ${
                   collapsed ? 'h-12 w-12' : 'h-10 w-10'
                 } ${isActive 
-                    ? (collapsed ? 'bg-brand-emerald border border-emerald-400/20 shadow-[inset_0_2px_6px_rgba(0,0,0,0.3),0_4px_6px_rgba(0,0,0,0.3)]' : 'bg-black/10') 
+                    ? (collapsed ? `${getActiveColorClasses(item.id).split(' ')[0]} border border-white/20 shadow-[inset_0_2px_6px_rgba(0,0,0,0.3),0_4px_6px_rgba(0,0,0,0.3)]` : 'bg-black/10') 
                     : (collapsed ? 'group-hover:bg-slate-200' : '')}`} 
                 aria-hidden
               >

@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
 import { useGasApp } from '../state/GasAppContext.jsx';
-import NavIcon from '../components/NavIcon.jsx';
 import InvoiceA4Preview from '../components/InvoiceA4Preview.jsx';
 import { parseInvoiceDate } from '../lib/dates.js';
 import { todayDdMmYyyy } from '../lib/dates.js';
@@ -28,40 +27,36 @@ export default function InvoiceLookupPage({ onNavigate }) {
     const q = query.trim().toLowerCase();
     let list = [...invoices];
 
-    // 1. Search Query Filter
     if (q) {
-      list = list.filter(inv => 
-        inv.invoiceNo.toLowerCase().includes(q) ||
-        inv.buyerSnapshot.name.toLowerCase().includes(q) ||
-        inv.buyerSnapshot.phone?.toLowerCase().includes(q)
+      list = list.filter(
+        (inv) =>
+          inv.invoiceNo.toLowerCase().includes(q) ||
+          inv.buyerSnapshot.name.toLowerCase().includes(q) ||
+          inv.buyerSnapshot.phone?.toLowerCase().includes(q)
       );
     }
 
-    // 2. Status Filter (Paid vs Credit)
     if (appliedFilters.status !== 'All') {
-      list = list.filter(inv => {
-        const isPaid = inv.paymentMode === 'Cash' || inv.paymentMode === 'Bank Transfer';
-        return appliedFilters.status === 'Paid' ? isPaid : (inv.paymentMode === 'Credit');
+      list = list.filter((inv) => {
+        const status = getPaymentStatus(inv);
+        return appliedFilters.status === 'Paid' ? status === 'approved' : status !== 'approved';
       });
     }
 
-    // 2.1 Payment Mode Filter
     if (appliedFilters.paymentMode !== 'All') {
-      list = list.filter(inv => inv.paymentMode === appliedFilters.paymentMode);
+      list = list.filter((inv) => inv.paymentMode === appliedFilters.paymentMode);
     }
 
-    // 3. Amount/Turnover Range Filter
     if (appliedFilters.minAmount) {
-      list = list.filter(inv => inv.totals.grand >= Number(appliedFilters.minAmount));
+      list = list.filter((inv) => inv.totals.grand >= Number(appliedFilters.minAmount));
     }
     if (appliedFilters.maxAmount) {
-      list = list.filter(inv => inv.totals.grand <= Number(appliedFilters.maxAmount));
+      list = list.filter((inv) => inv.totals.grand <= Number(appliedFilters.maxAmount));
     }
 
-    // 4. Date Filter logic
     if (appliedFilters.dateRange !== 'All Time') {
       const now = new Date();
-      list = list.filter(inv => {
+      list = list.filter((inv) => {
         const invDate = new Date(inv.savedAt);
         if (appliedFilters.dateRange === 'This Month') {
           return invDate.getMonth() === now.getMonth() && invDate.getFullYear() === now.getFullYear();
@@ -78,7 +73,6 @@ export default function InvoiceLookupPage({ onNavigate }) {
       });
     }
 
-    // 5. Sort order
     if (sortOrder === 'newest') {
       list = [...list].sort((a, b) => new Date(b.savedAt || 0) - new Date(a.savedAt || 0));
     } else if (sortOrder === 'amount') {
@@ -89,12 +83,15 @@ export default function InvoiceLookupPage({ onNavigate }) {
   }, [invoices, query, sortOrder, appliedFilters]);
 
   const stats = useMemo(() => {
-    return filteredInvoices.reduce((acc, inv) => {
-      acc.total += inv.totals.grand;
-      if (inv.paymentMode === 'Credit') acc.unpaid += inv.totals.grand;
-      else acc.paid += inv.totals.grand;
-      return acc;
-    }, { total: 0, paid: 0, unpaid: 0 });
+    return filteredInvoices.reduce(
+      (acc, inv) => {
+        acc.total += inv.totals.grand;
+        if (getPaymentStatus(inv) === 'approved') acc.paid += inv.totals.grand;
+        else acc.unpaid += inv.totals.grand;
+        return acc;
+      },
+      { total: 0, paid: 0, unpaid: 0 }
+    );
   }, [filteredInvoices]);
 
   const exportToCSV = () => {
@@ -152,39 +149,64 @@ export default function InvoiceLookupPage({ onNavigate }) {
     }
   };
 
+  function getPaymentStatus(inv) {
+    if (inv.paymentStatus) return inv.paymentStatus;
+    const balanceDue = Number(inv.balanceDue ?? inv.totals.grand - (inv.receivedAmount || 0));
+    if (balanceDue <= 0) return 'approved';
+    if ((Number(inv.receivedAmount) || 0) > 0) return 'partial';
+    return 'pending';
+  }
+
+  function getBalanceDue(inv) {
+    const value = Number(inv.balanceDue);
+    if (Number.isFinite(value)) return Math.max(0, value);
+    return Math.max(0, inv.totals.grand - (inv.receivedAmount || 0));
+  }
+
   /** Helper to check if current date passed the due date */
   const isOverdue = (dueDateStr) => {
     if (!dueDateStr || dueDateStr.trim() === '') return false;
     const dueDate = parseInvoiceDate(dueDateStr);
     const today = new Date();
-    today.setHours(0, 0, 0, 0); 
+    today.setHours(0, 0, 0, 0);
     return today > dueDate;
   };
 
   /** Mark invoice as fully paid (offline/cash scenario) */
   const handleApproveManually = (inv) => {
     if (confirm('Mark this invoice as fully paid and approved?')) {
-      updateInvoice(inv.id, { receivedAmount: inv.totals.grand, paymentMode: 'Cash', paymentDate: todayDdMmYyyy() });
+      updateInvoice(inv.id, {
+        receivedAmount: inv.totals.grand,
+        balanceDue: 0,
+        paymentStatus: 'approved',
+        paymentMode: 'Cash',
+        paymentDate: todayDdMmYyyy(),
+      });
       alert('Invoice marked as PAID.');
     }
   };
 
   const sendPaymentLink = (inv) => {
-    const due = inv.totals.grand - (inv.receivedAmount || 0);
+    const due = getBalanceDue(inv);
     const message = `Dear ${inv.buyerSnapshot.name}, please complete your payment of ₹${due} for invoice #${inv.invoiceNo.split('/').pop()} using this link: https://pay.mig.com/${inv.id} . - Murshidabad Industrial Gases`;
-    
-    // Simulation: Mark as paid via Bank Transfer after 5 seconds to simulate link usage
+
     if (confirm(`Send payment link for ₹${due} via WhatsApp?`)) {
       window.open(`https://wa.me/91${inv.buyerSnapshot.phone}?text=${encodeURIComponent(message)}`, '_blank');
-      alert("Simulation: Payment will be auto-processed in 5 seconds via link callback.");
+      alert('Simulation: Payment will be auto-processed in 5 seconds via link callback.');
       setTimeout(() => {
-        updateInvoice(inv.id, { receivedAmount: inv.totals.grand, paymentMode: 'Bank Transfer', paymentDate: todayDdMmYyyy() });
+        updateInvoice(inv.id, {
+          receivedAmount: inv.totals.grand,
+          balanceDue: 0,
+          paymentStatus: 'approved',
+          paymentMode: 'Bank Transfer',
+          paymentDate: todayDdMmYyyy(),
+        });
       }, 5000);
     }
   };
 
   const sendWhatsAppReminder = (inv) => {
-    const balance = inv.totals.grand - (inv.receivedAmount || 0);
+    const balance = getBalanceDue(inv);
     const message = `*PAYMENT REMINDER*
 Dear ${inv.buyerSnapshot.name}, your invoice #${inv.invoiceNo.split('/').pop()} is now OVERDUE.
 Total Bill: ₹${inv.totals.grand}
@@ -193,7 +215,7 @@ Amount Paid: ₹${inv.receivedAmount || 0}
 
 Please clear the payment at the earliest. Thank you.
 - Murshidabad Industrial Gases`;
-    
+
     window.open(`https://wa.me/91${inv.buyerSnapshot.phone}?text=${encodeURIComponent(message)}`, '_blank');
   };
 
@@ -462,25 +484,31 @@ Please clear the payment at the earliest. Thank you.
                   <td className="px-6 py-4 font-black text-slate-900">₹{inv.totals.grand.toLocaleString('en-IN')}</td>
                   <td className="px-6 py-4">
                     {(() => {
-                      const balance = inv.totals.grand - (inv.receivedAmount || 0);
-                      if (balance <= 0) return (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-emerald-100 text-emerald-700 shadow-sm">
+                      const status = getPaymentStatus(inv);
+                      const balance = getBalanceDue(inv);
+                      if (status === 'approved') return (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-[10px] font-black uppercase text-emerald-700 shadow-sm">
                           <i className="fa-solid fa-circle-check text-[8px]"></i> APPROVED
                         </span>
                       );
-                      if (inv.receivedAmount > 0) return (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-blue-100 text-blue-700 shadow-sm">
+                      if (status === 'partial') return (
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-3 py-1 text-[10px] font-black uppercase text-blue-700 shadow-sm">
                           <i className="fa-solid fa-spinner text-[8px]"></i> PARTIAL
                         </span>
                       );
                       return (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase bg-rose-100 text-rose-700 shadow-sm">
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-100 px-3 py-1 text-[10px] font-black uppercase text-rose-700 shadow-sm">
                           <i className="fa-solid fa-clock text-[8px]"></i> UNPAID
                         </span>
                       );
                     })()}
-                    {inv.totals.grand - (inv.receivedAmount || 0) > 0 && isOverdue(inv.paymentDueDate) && (
-                      <div className="text-[8px] font-black text-red-500 animate-pulse mt-1 ml-1 uppercase">Overdue</div>
+                    {getBalanceDue(inv) > 0 && isOverdue(inv.paymentDueDate) && (
+                      <div className="mt-1 ml-1 text-[8px] font-black uppercase text-red-500 animate-pulse">Overdue</div>
+                    )}
+                    {getBalanceDue(inv) > 0 && (
+                      <div className="mt-1 ml-1 text-[8px] font-bold text-slate-500">
+                        Balance ₹{getBalanceDue(inv).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </div>
                     )}
                   </td>
                   <td className="px-6 py-4 text-slate-500 font-medium">
@@ -489,24 +517,24 @@ Please clear the payment at the earliest. Thank you.
                   <td className="px-6 py-4 text-slate-500 font-bold">{inv.invoiceDate}</td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                      {inv.totals.grand - (inv.receivedAmount || 0) <= 0 ? (
-                        <button 
+                      {getPaymentStatus(inv) === 'approved' ? (
+                        <button
                           onClick={() => { setSelectedInvoice(inv); setTimeout(() => window.print(), 100); }}
-                          className="rounded-xl bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase text-slate-600 hover:bg-slate-200 transition-all"
+                          className="rounded-xl bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase text-slate-600 transition-all hover:bg-slate-200"
                         >
                           <i className="fa-solid fa-print mr-1"></i> Print
                         </button>
                       ) : (
                         <>
                           {isOverdue(inv.paymentDueDate) && (
-                            <button onClick={() => sendWhatsAppReminder(inv)} className="rounded-xl bg-amber-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm hover:brightness-95 transition-all">
+                            <button onClick={() => sendWhatsAppReminder(inv)} className="rounded-xl bg-amber-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm transition-all hover:brightness-95">
                               Remind
                             </button>
                           )}
-                          <button onClick={() => handleApproveManually(inv)} className="rounded-xl bg-emerald-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm hover:brightness-95 transition-all">
+                          <button onClick={() => handleApproveManually(inv)} className="rounded-xl bg-emerald-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm transition-all hover:brightness-95">
                             Approve
                           </button>
-                          <button onClick={() => sendPaymentLink(inv)} className="rounded-xl bg-blue-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm hover:brightness-95 transition-all">
+                          <button onClick={() => sendPaymentLink(inv)} className="rounded-xl bg-blue-500 px-3 py-1.5 text-[10px] font-black uppercase text-white shadow-sm transition-all hover:brightness-95">
                             Link
                           </button>
                         </>
@@ -561,16 +589,16 @@ Please clear the payment at the earliest. Thank you.
               </div>
             </div>
             <div className="p-8 bg-slate-50/50 min-h-screen flex justify-center">
-              <div id="invoice-print-root" className="shadow-2xl bg-white rounded-lg overflow-hidden border border-slate-200">
-                <InvoiceA4Preview 
-                  {...selectedInvoice} 
+              <div id="invoice-print-root" className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
+                <InvoiceA4Preview
+                  {...selectedInvoice}
                   seller={sellerProfile}
                   buyer={selectedInvoice.buyerSnapshot}
                   taxableTotal={selectedInvoice.totals.taxable}
                   cgstTotal={selectedInvoice.totals.cgst}
                   sgstTotal={selectedInvoice.totals.sgst}
-                  gstPercentLabel={selectedInvoice.totals.taxable > 0 ? "9%" : "0%"}
-                  gstSgstLabel={selectedInvoice.totals.taxable > 0 ? "9%" : "0%"}
+                  gstPercentLabel={selectedInvoice.totals.taxable > 0 ? '9%' : '0%'}
+                  gstSgstLabel={selectedInvoice.totals.taxable > 0 ? '9%' : '0%'}
                   grandTotal={selectedInvoice.totals.grand}
                 />
               </div>

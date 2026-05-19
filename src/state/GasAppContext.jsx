@@ -3,6 +3,20 @@ import { STORAGE_KEY, defaultAppState, hydrateState } from './defaultAppState.js
 import { mergeCatalog, isBuiltInProductId } from '../lib/catalogMerge.js';
 import { uid } from '../utils/id.js';
 
+function toMoney(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+function normalizeInvoicePayment(invoice) {
+  const grandTotal = toMoney(invoice?.totals?.grand);
+  const receivedAmount = grandTotal > 0 ? Math.min(Math.max(toMoney(invoice?.receivedAmount), 0), grandTotal) : Math.max(toMoney(invoice?.receivedAmount), 0);
+  const balanceDue = Math.max(0, Math.round((grandTotal - receivedAmount) * 100) / 100);
+  const paymentStatus = balanceDue === 0 ? 'approved' : receivedAmount > 0 ? 'partial' : 'pending';
+
+  return { receivedAmount, balanceDue, paymentStatus };
+}
+
 const GasAppContext = createContext(null);
 
 export function GasAppProvider({ children }) {
@@ -165,7 +179,7 @@ export function GasAppProvider({ children }) {
     const { stockMoves } = payload;
 
     // --- Pre-validation before setState ---
-    const currentStock = state.stockByProductId; // Use current state for validation
+    const currentStock = state.stockByProductId;
     for (const m of stockMoves) {
       const cur = currentStock[m.productId];
       if (!cur) return { ok: false, error: `Unknown product stock: ${m.productId}` };
@@ -179,7 +193,6 @@ export function GasAppProvider({ children }) {
 
     const invId = uid();
 
-    // If all validations pass, proceed with state update
     setState((prev) => {
       const nextStock = { ...prev.stockByProductId };
       for (const m of stockMoves) {
@@ -187,21 +200,20 @@ export function GasAppProvider({ children }) {
         nextStock[m.productId] = {
           ...cur,
           filled: cur.filled - m.qtyNo,
-          // Note: Empty stock doesn't increase here because the 
-          // customer hasn't returned them to the yard yet.
         };
       }
 
-      const record = {
+      const baseRecord = {
         id: invId,
         savedAt: new Date().toISOString(),
         ...payload,
       };
+      const paymentFields = normalizeInvoicePayment(baseRecord);
+      const record = { ...baseRecord, ...paymentFields };
 
-      // Update Customer Holdings (Cylinders out with customer)
       let nextHoldings = [...prev.customerHoldings];
       for (const m of stockMoves) {
-        const idx = nextHoldings.findIndex(h => h.customerId === payload.customerId && h.productId === m.productId);
+        const idx = nextHoldings.findIndex((h) => h.customerId === payload.customerId && h.productId === m.productId);
         if (idx >= 0) {
           nextHoldings[idx] = { ...nextHoldings[idx], qty: nextHoldings[idx].qty + m.qtyNo };
         } else {
@@ -218,15 +230,50 @@ export function GasAppProvider({ children }) {
       };
     });
 
-    return { ok: true, id: invId }; 
-  }, [state, fullCatalog]);
+    return { ok: true, id: invId };
+  }, [state]);
+
+  /** Initiate a secure payment intent */
+  const createPaymentIntent = useCallback(async (amount, customerId, metadata) => {
+    const intentId = `pi_${uid()}`;
+    const paymentLink = `https://pay.mig.com/checkout/${intentId}`;
+    
+    const newIntent = {
+      id: intentId,
+      amount,
+      customerId,
+      status: 'pending',
+      link: paymentLink,
+      metadata,
+      createdAt: new Date().toISOString()
+    };
+
+    setState(s => ({
+      ...s,
+      paymentIntents: [newIntent, ...(s.paymentIntents || [])]
+    }));
+
+    return newIntent;
+  }, []);
+
+  /** Mock webhook receiver from the payment server */
+  const processPaymentWebhook = useCallback((intentId) => {
+    setState(s => ({
+      ...s,
+      paymentIntents: (s.paymentIntents || []).map(pi => 
+        pi.id === intentId ? { ...pi, status: 'captured', confirmedAt: new Date().toISOString() } : pi
+      )
+    }));
+  }, []);
 
   const updateInvoice = useCallback((invoiceId, patch) => {
     setState((s) => ({
       ...s,
-      invoices: s.invoices.map((inv) =>
-        inv.id === invoiceId ? { ...inv, ...patch } : inv
-      ),
+      invoices: s.invoices.map((inv) => {
+        if (inv.id !== invoiceId) return inv;
+        const updated = { ...inv, ...patch };
+        return { ...updated, ...normalizeInvoicePayment(updated) };
+      }),
     }));
   }, []);
 
